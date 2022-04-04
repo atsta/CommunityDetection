@@ -7,7 +7,7 @@ from pyspark import SparkConf, SparkContext
 from pyspark.sql import SQLContext, functions as sqlfunctions, types
 from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType
-from pyspark.sql.functions import lit
+from pyspark.sql.functions import lit, col
 
 spark = SparkSession.builder.appName('community-detection-problem').getOrCreate()
 
@@ -45,8 +45,9 @@ community_type = types.StructType([types.StructField("id", types.StringType()), 
 new_community_udf = F.udf(new_community, community_type)
 
 #initial community of each node is the node itself
-vertices = vertices.withColumn("init_community", vertices["id"].cast(IntegerType()))
-vertices = vertices.withColumn("community", new_community_udf(vertices["init_community"], vertices["id"])).drop("init_community")
+#vertices = vertices.withColumn("init_community", vertices["id"].cast(IntegerType()))
+vertices = vertices.withColumn("community", new_community_udf(vertices["id"], vertices["id"]))
+#.drop("init_community")
 
 cached_vertices = AM.getCachedDataFrame(vertices)
 
@@ -56,22 +57,29 @@ g.vertices.show()
 g.edges.show()
 g.degrees.show()
 
-#get the smallest between two integers
+#get the smallest community, keep previous id
 def get_min(oldcommunity, newcommunity):
-    return oldcommunity if(oldcommunity < newcommunity) else newcommunity
+    return {"id": oldcommunity.id, "community": oldcommunity.community} if(oldcommunity < newcommunity) else {"id": oldcommunity.id, "community": newcommunity.community} 
 get_min_udf = F.udf(get_min, community_type)
+
+#check if community has changed 
+def check_changes(oldcommunity, community):
+    return False if oldcommunity == community else True
+check_changes_udf = F.udf(check_changes, types.BooleanType())
+
+#get community value
+def get_community(community):
+    return community.community
+get_community_udf = F.udf(get_community, types.IntegerType())
 
 #get the smallest most common community
 def get_new_community(communities):
-    communities_df = spark.createDataFrame(communities, ["id", "community"])
-    for community in communities_df:
-        print(community)
-    communities_df.orderBy("community")
-    new_community = communities_df[0]
+    communities.sort(key=lambda x: x[1])
+    new_community = communities[0]
     new_community_count = 0
     max_count = 0
     max_count_community = new_community
-    for community in communities_df:
+    for community in communities:
         if community.community == new_community.community:
             new_community_count+=1
         else:
@@ -80,25 +88,37 @@ def get_new_community(communities):
         if new_community_count > max_count:
                 max_count = new_community_count
                 max_count_community = new_community
-    print("-----------")
-    return {"id": max_count_community.id, "rating": max_count_community.community}
+    return {"id": max_count_community.id, "community": max_count_community.community}
 get_new_community_udf = F.udf(get_new_community, community_type)
 
-superstep = 1
+def show_solution(vertices, edges):
+    print("------------ Community Detection Solution ------------")
+    vertices = vertices.withColumn("community", get_community_udf(vertices["community"])).drop("community_changed")
+    cached_new_vertices = AM.getCachedDataFrame(vertices)
+    g = GraphFrame(cached_new_vertices, edges)
+    g.vertices.show()
+
+it_count = 1
 while(1):
-    superstep = superstep + 1
+    if it_count > 40: 
+        show_solution(new_vertices, g.edges)
+        break
 
     aggregates = g.aggregateMessages(F.collect_set(AM.msg).alias("agg"), sendToDst=AM.src["community"])
     res = aggregates.withColumn("new_community", get_new_community_udf("agg")).drop("agg")
     new_vertices = g.vertices.join(res, on="id", how="left_outer") \
                     .withColumnRenamed("community", "old_community") \
-                    .withColumn("previous_community", F.col("old_community")) \
                     .withColumn("community", get_min_udf(F.col("old_community"), F.col("new_community"))) \
+                    .withColumn("community_changed", check_changes_udf(F.col("old_community"), F.col("community"))) \
                     .drop("new_community").drop("old_community")
 
     cached_new_vertices = AM.getCachedDataFrame(new_vertices)
     g = GraphFrame(cached_new_vertices, g.edges)
     g.vertices.show()
+    it_count += 1
 
-    if superstep > 40: 
-        break
+    if(bool(new_vertices.filter(new_vertices.community_changed.contains(True)).collect())):
+        continue
+
+    show_solution(new_vertices, g.edges)
+    break
