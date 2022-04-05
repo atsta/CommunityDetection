@@ -51,13 +51,16 @@ vertices = vertices.withColumn("community", new_community_udf(vertices["init_com
 # display input graph
 cached_vertices = AM.getCachedDataFrame(vertices)
 g = GraphFrame(cached_vertices, edges)
+new_vertices = g.vertices.join(g.degrees, on="id", how="left_outer")
+cached_vertices = AM.getCachedDataFrame(new_vertices)
+g = GraphFrame(cached_vertices, edges)
 g.vertices.show()
-g.edges.show()
-g.degrees.show()
 
-# get the smallest community by value, keep previous id
-def get_min(oldcommunity, newcommunity):
-    return {"id": oldcommunity.id, "community": oldcommunity.community} if(oldcommunity < newcommunity) else {"id": oldcommunity.id, "community": newcommunity.community} 
+# get the smallest community by value, keep previous id for one neighbor case
+def get_min(current_community, new_community, degree):
+    if (degree > 2):
+        return {"id": current_community.id, "community": new_community.community} 
+    return {"id": current_community.id, "community": current_community.community} if(current_community.community < new_community.community) else {"id": current_community.id, "community": new_community.community} 
 get_min_udf = F.udf(get_min, community_type)
 
 # check if community has changed 
@@ -90,13 +93,14 @@ def get_community(community):
 
 def print_solution(vertices, edges):
     print("------------ Community Detection Solution ------------")
-    vertices = vertices.withColumn("community", get_community(vertices["community"])).drop("community_changed")
+    vertices = vertices.withColumn("community", get_community(vertices["community"])).drop("community_changed").drop("degree")
     cached_new_vertices = AM.getCachedDataFrame(vertices)
     g = GraphFrame(cached_new_vertices, edges)
     g.vertices.show()
 
 it_count = 1
 while(1):
+    # maximum iterations = 40
     if it_count > 40: 
         print_solution(new_vertices, g.edges)
         break
@@ -105,15 +109,17 @@ while(1):
     res = aggregates.withColumn("new_community", get_new_community_udf("agg")).drop("agg")
     new_vertices = g.vertices.join(res, on="id", how="left_outer") \
                     .withColumnRenamed("community", "old_community") \
-                    .withColumn("community", get_min_udf(F.col("old_community"), F.col("new_community"))) \
+                    .withColumn("community", get_min_udf(F.col("old_community"), F.col("new_community"), F.col("degree"))) \
                     .withColumn("community_changed", check_changes_udf(F.col("old_community"), F.col("community"))) \
                     .drop("new_community").drop("old_community")
 
+    # id, community, community_changed, degree
     cached_new_vertices = AM.getCachedDataFrame(new_vertices)
     g = GraphFrame(cached_new_vertices, g.edges)
     g.vertices.show()
     it_count += 1
 
+    # if at least one vertice has acquired a new community, continue 
     if(bool(new_vertices.filter(new_vertices.community_changed.contains(True)).collect())):
         continue
 
