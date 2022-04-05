@@ -17,7 +17,13 @@ vertices = spark.createDataFrame([('1',),
                                   ('4',), 
                                   ('5',),
                                   ('6',),
-                                  ('7',)],
+                                  ('7',),
+                                  ('8',),
+                                  ('9',),
+                                  ('10',),
+                                  ('11',),
+                                  ('12',),
+                                  ('13',)],
                                   ['id'])
 
 edges = spark.createDataFrame([('1', '2'), 
@@ -26,16 +32,30 @@ edges = spark.createDataFrame([('1', '2'),
                                 ('3', '1'),
                                 ('2', '3'), 
                                 ('3', '2'),
-                                ('1', '4'),
-                                ('4', '1'),
+                                ('2', '4'),
+                                ('4', '2'),
                                 ('4', '5'),
                                 ('5', '4'),
-                                ('5', '6'),
-                                ('6', '5'),
-                                ('5', '7'),
-                                ('7', '5'),
-                                ('6', '7'), 
-                                ('7', '6')],
+                                ('4', '6'),
+                                ('6', '4'),
+                                ('6', '7'),
+                                ('7', '6'),
+                                ('6', '8'), 
+                                ('8', '6'),
+                                ('7', '8'),
+                                ('8', '7'),
+                                ('7', '9'),
+                                ('9', '7'),
+                                ('10', '9'),
+                                ('9', '10'),
+                                ('9', '11'),
+                                ('11', '9'),
+                                ('11', '12'),
+                                ('12', '11'),
+                                ('12', '13'),
+                                ('13', '12'),
+                                ('11', '13'),
+                                ('13', '11')],
                                 ['src', 'dst'])
 
 # create a community data type
@@ -51,6 +71,10 @@ vertices = vertices.withColumn("community", new_community_udf(vertices["init_com
 # display input graph
 cached_vertices = AM.getCachedDataFrame(vertices)
 g = GraphFrame(cached_vertices, edges)
+g.vertices.show()
+g.edges.show()
+g.degrees.show()
+
 new_vertices = g.vertices.join(g.degrees, on="id", how="left_outer")
 cached_vertices = AM.getCachedDataFrame(new_vertices)
 g = GraphFrame(cached_vertices, edges)
@@ -60,9 +84,9 @@ g.vertices.show()
 def get_min(current_community, new_community, degree):
     if (degree > 2):
         return {"id": current_community.id, "community": new_community.community} 
-    return {"id": current_community.id, "community": current_community.community} if(current_community.community < new_community.community) else {"id": current_community.id, "community": new_community.community} 
+    return {"id": current_community.id, "community": current_community.community} if(current_community.community <= new_community.community) else {"id": current_community.id, "community": new_community.community} 
 get_min_udf = F.udf(get_min, community_type)
-
+   
 # check if community has changed 
 def check_changes(oldcommunity, community):
     return False if oldcommunity == community else True
